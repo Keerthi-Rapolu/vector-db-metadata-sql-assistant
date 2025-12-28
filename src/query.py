@@ -1,19 +1,35 @@
 import os
 import sys
+import csv
 from dotenv import load_dotenv
 
 from src.ollama_client import ollama_embed, ollama_chat
 from src.vectordb import get_client, get_collection
-from src.llm import build_sql_prompt
+from src.llm import is_sql_request, build_sql_prompt, build_discovery_prompt
 
 def format_hint(meta: dict) -> str:
     return f"{meta.get('domain')}.{meta.get('table_name')}.{meta.get('column_name')} ({meta.get('data_type')}) - {meta.get('description')}"
+
+def load_relationship_hints(path: str) -> list[str]:
+    if not os.path.exists(path):
+        return []
+    hints = []
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            lt = r["left_table"].strip()
+            lc = r["left_column"].strip()
+            rt = r["right_table"].strip()
+            rc = r["right_column"].strip()
+            rel = r.get("relationship", "").strip()
+            hints.append(f"{lt}.{lc} -> {rt}.{rc} ({rel})")
+    return hints
 
 def main():
     load_dotenv()
 
     if len(sys.argv) < 2:
-        print('Usage: python src/query.py "your question here"')
+        print('Usage: python -m src.query "your question here"')
         sys.exit(1)
 
     question = sys.argv[1]
@@ -46,12 +62,20 @@ def main():
         context_lines.append(hint)
         print(f"{i}. {hint}  | distance={d:.4f}")
 
-    prompt = build_sql_prompt(question=question, context_lines=context_lines)
-    sql = ollama_chat(prompt, model=chat_model).strip()
+    relationship_lines = load_relationship_hints(os.path.join("data", "relationships.csv"))
 
-    print("\nGenerated SQL:")
-    print(sql)
-    print()
+    if is_sql_request(question):
+        prompt = build_sql_prompt(question=question, context_lines=context_lines, relationship_lines=relationship_lines)
+        sql = ollama_chat(prompt, model=chat_model).strip()
+        print("\nGenerated SQL:")
+        print(sql)
+        print()
+    else:
+        prompt = build_discovery_prompt(question=question, context_lines=context_lines)
+        answer = ollama_chat(prompt, model=chat_model).strip()
+        print("\nAnswer:")
+        print(answer)
+        print()
 
 if __name__ == "__main__":
     main()
